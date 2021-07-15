@@ -17,29 +17,37 @@ from os import path
 import pandas as pd
 
 class Transcriptions:
-    data = {}
+    data = []
 
-    def add(self, transcriptionKey:str, transcriptionValue:str):
-        self.data[transcriptionKey] = transcriptionValue
+    def add(self, transcriptionKey:str, model:str, transcriptionValue:str):
+        self.data.append([transcriptionKey,model,transcriptionValue])
 
     def getData(self):
         return self.data
 
+        
+
 class MyRecognizeCallback(RecognizeCallback):
     audio_file_name = None
     transcriptions = None
+    models = None
 
-    def __init__(self, audio_file_name:str, transcriptions:Transcriptions):
+    def __init__(self, audio_file_name:str, model:str, transcriptions:Transcriptions):
         RecognizeCallback.__init__(self)
         self.audio_file_name = audio_file_name
+        self.model = model
         self.transcriptions = transcriptions
 
     def on_data(self, data):
         #print(json.dumps(data, indent=2))
+        transcription = ""
         try:
-            transcription = data['results'][0]["alternatives"][0]["transcript"]
-            #print(transcription)
-            self.transcriptions.add(self.audio_file_name, transcription)
+            for x in data['results']:
+                transcription += " " + x["alternatives"][0]["transcript"]
+            print("FULL TRANSCRIPTION: " + transcription)
+
+            self.transcriptions.add(self.audio_file_name,  self.model, transcription)
+            #self.models.add(self.audio_file_name,  transcription)
         except:
             print(f"{self.audio_file_name} - No transcription found", sys.stderr)
 
@@ -86,7 +94,7 @@ class Transcriber:
         except:
             return None
 
-    def transcribe(self, filename):
+    def transcribe(self, filename, model):
         print(f"Transcribing from {filename}")
 
         base_model                = self.config.getValue("SpeechToText", "base_model_name")
@@ -94,7 +102,7 @@ class Transcriber:
         acoustic_customization_id = self.config.getValue("SpeechToText", "acoustic_model_id")
         grammar_name              = self.config.getValue("SpeechToText", "grammar_name")
 
-        callback                  = MyRecognizeCallback(filename, self.transcriptions)
+        callback                  = MyRecognizeCallback(filename, model, self.transcriptions)
 
         #print(f"Requesting transcription of {filename}")
         with open(filename, "rb") as audio_file:
@@ -102,26 +110,27 @@ class Transcriber:
                 content_type=self.getAudioType(filename),
                 recognize_callback=callback,
                 model=base_model,
+               # base_model_version="en-US_NarrowbandModel.v2019-05-31",
                 language_customization_id=language_customization_id,
                 acoustic_customization_id=acoustic_customization_id,
                 grammar_name=grammar_name,
                 interim_results=False, #If set to "True", metrics values below must be set to "False" or the python code will break
                 audio_metrics=False,
-                end_of_phrase_silence_time=1.5,
+                end_of_phrase_silence_time=30,
                 inactivity_timeout=-1
             )
             #print(f"Requested transcription of {filename}")
 
     def report(self):
         report_file_name = self.config.getValue("Transcriptions", "stt_transcriptions_file")
-        csv_columns = ['Audio File Name','Transcription']
+        csv_columns = ['Audio File Name','Model','Transcription']
         #print(self.transcriptions.getData())
         data = self.transcriptions.getData()
 
         with open(report_file_name, 'w') as csvfile:
             writer = csv.writer(csvfile)
             writer.writerow(csv_columns)
-            writer.writerows(data.items())
+            writer.writerow(data.pop())
             print(f"Wrote transcriptions for {len(data)} audio files to {report_file_name}")
 
         reference_file_name = self.config.getValue("Transcriptions", "reference_transcriptions_file")
@@ -165,11 +174,14 @@ def main():
     transcriber = Transcriber(config)
 
     audio_file_dir    = config.getValue("Transcriptions","audio_file_folder")
-
+    base_model = config.getValue("SpeechToText","base_model_name")
+    language_model = config.getValue("SpeechToText","language_model_id")
+    if language_model == None:
+        language_model = ""
     files = [f for f in os.listdir(audio_file_dir)]
     for file in files:
         if transcriber.getAudioType(file) is not None:
-            transcriber.transcribe(audio_file_dir + "/" + file)
+            transcriber.transcribe(audio_file_dir + "/" + file, base_model+"-"+language_model)
 
     transcriber.report()
 

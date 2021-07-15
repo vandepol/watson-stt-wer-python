@@ -11,18 +11,21 @@ import jiwer
 import json
 import sys
 import csv
+import os
 from os.path import join, dirname
 from config import Config
+from pathlib import Path
 
 
 class AnalysisResult:
-    def __init__(self, audio_file_name, reference, hypothesis, cleaned_reference, cleaned_hypothesis, measures, differences):
+    def __init__(self, audio_file_name, model, reference, hypothesis, cleaned_reference, cleaned_hypothesis, measures, differences):
         self.audio_file_name = audio_file_name
         self.measures        = measures
         self.differences     = differences
 
         self.data = {}
         self.data["Audio File Name"]       = audio_file_name
+        self.data["Model"]                 = model
         self.data["Reference"]             = reference
         self.data["Transcription"]         = hypothesis
         self.data["Reference (clean)"]     = cleaned_reference
@@ -70,15 +73,16 @@ class AnalysisResults:
 
         return results
 
-    def write_details(self, filename):
+    def write_details(self, multipleResults, filename):
         print(f"Writing detailed results to {filename}")
         csv_columns = self.headers
 
         with open(filename, 'w') as csvfile:
             writer = csv.writer(csvfile)
             writer.writerow(csv_columns)
-            for result in self.results:
-                writer.writerow(result.data.values())
+            for thisResult in multipleResults:
+                for result in thisResult.results:
+                    writer.writerow(result.data.values())
 
     def write_summary(self, filename):
         print(f"Writing summary results to {filename}")
@@ -95,7 +99,9 @@ class Analyzer:
         result = {}
         # https://stackoverflow.com/questions/57152985/what-is-the-difference-between-utf-8-and-utf-8-sig
         # utf-8-sig so we can ignore the BOM (Byte Order Marker)
+
         with open(filename, encoding='utf-8-sig') as file:
+            print(file)
             csvreader = csv.DictReader(file)
             for row in csvreader:
                 key = row[headers[0]]
@@ -138,13 +144,16 @@ class Analyzer:
         hypothesis_file  = self.config.getValue("Transcriptions","stt_transcriptions_file")
         reference_dict   = self.load_csv(reference_file, ["Audio File Name", "Reference"])
         hypothesis_dict  = self.load_csv(hypothesis_file,["Audio File Name", "Transcription"])
+        hypothesis_model_dict  = self.load_csv(hypothesis_file,["Audio File Name", "Model"])
+        
 
         results = AnalysisResults()
 
         for audio_file_name in reference_dict.keys():
             reference = reference_dict.get(audio_file_name)
-            hypothesis   = hypothesis_dict.get(audio_file_name, None)
-
+            hypothesis = hypothesis_dict.get(audio_file_name, None)
+            hypothesis_model = hypothesis_model_dict.get(audio_file_name, None)
+            print(hypothesis_model)
             if hypothesis is None:
                 print(f"{audio_file_name} - No hypothesis transcription found", sys.stderr)
                 continue
@@ -157,8 +166,47 @@ class Analyzer:
             measures = jiwer.compute_measures(cleaned_ref, cleaned_hyp)
             differences = list(set(cleaned_ref) - set(cleaned_hyp))
 
-            result = AnalysisResult(audio_file_name, reference, hypothesis, " ".join(cleaned_ref), " ".join(cleaned_hyp), measures, differences)
+            result = AnalysisResult(audio_file_name, hypothesis_model, reference, hypothesis, " ".join(cleaned_ref), " ".join(cleaned_hyp), measures, differences)
             results.add(result)
+
+        return results
+
+    def analyzeJSON(self, model,  jsonFile):
+        reference_file   = self.config.getValue("Transcriptions","reference_transcriptions_file")
+        #hypothesis_file  = self.config.getValue("Transcriptions","stt_transcriptions_file")
+        reference_dict   = self.load_csv(reference_file, ["Audio File Name", "Reference"])
+        #hypothesis_dict  = self.load_csv(hypothesis_file,["Audio File Name", "Transcription"])
+        #hypothesis_model_dict  = self.load_csv(hypothesis_file,["Audio File Name", "Model"])
+        f = open(jsonFile,)
+        data = json.load(f)
+        hypothesis_transcript = data["results"][0]["alternatives"][0]["transcript"]
+
+        results = AnalysisResults()
+
+        #for audio_file_name in reference_dict.keys():
+        
+
+        
+        referencefilename = Path(jsonFile).stem + ".wav"
+        reference_file   = "./transcription/reference/"+Path(jsonFile).stem +".csv"
+        reference_dict   = self.load_csv(reference_file, ["Audio File Name", "Reference"])
+        reference = reference_dict.get(referencefilename)
+        hypothesis_model = model
+        print(hypothesis_model)
+        if hypothesis_transcript is None:
+            print(f"{audio_file_name} - No hypothesis transcription found", sys.stderr)
+            return
+
+        # Common pre-processing on ground truth and hypothesis
+        cleaned_ref = self.transformation(reference)
+        cleaned_hyp = self.transformation(hypothesis_transcript)
+
+        # gather all metrics at once with `compute_measures`
+        measures = jiwer.compute_measures(cleaned_ref, cleaned_hyp)
+        differences = list(set(cleaned_ref) - set(cleaned_hyp))
+
+        result = AnalysisResult(referencefilename, hypothesis_model, reference, hypothesis_transcript, " ".join(cleaned_ref), " ".join(cleaned_hyp), measures, differences)
+        results.add(result)
 
         return results
 
@@ -170,11 +218,47 @@ def main():
        print("Using default config filename: config.ini.")
 
     config      = Config(config_file)
+     #   config.setValue("Transcriptions","stt_transcriptions_file", "/Users/davidvandepol/Downloads/itg-canadapost-va/static/transcription/telephony/253001029570144.json")
     analyzer    = Analyzer(config)
 
-    results = analyzer.analyze()
-    results.write_details(config.getValue("ErrorRateOutput","details_file"))
-    results.write_summary(config.getValue("ErrorRateOutput","summary_file"))
+
+    results = []
+
+    files = [f for f in os.listdir("./transcription/reference")]
+    for file in files:
+        referencefilename = Path(file).stem + ".json"
+        model = "telephony"
+        result = analyzer.analyzeJSON(model, "./transcription/"+model+"/"+referencefilename)
+        results.append(result)
+
+        referencefilename = Path(file).stem + ".json"
+        model = "narrowband"
+        result = analyzer.analyzeJSON(model, "./transcription/"+model+"/"+referencefilename)
+        results.append(result)
+
+        referencefilename = Path(file).stem + ".json"
+        model = "custom_narrowband"
+        result = analyzer.analyzeJSON(model, "./transcription/"+model+"/"+referencefilename)
+        results.append(result)
+
+
+
+    # files = [f for f in os.listdir("./sst_transcriptions")]
+    # for file in files:
+    #     config      = Config(config_file)
+    #     config.setValue("Transcriptions","stt_transcriptions_file", "./sst_transcriptions/" + file)
+    #     analyzer    = Analyzer(config)
+    #     result = analyzer.analyze()
+    #     results.append(result)
+
+    # config      = Config(config_file)
+    # config.setValue("Transcriptions","stt_transcriptions_file", "stt_transcriptions_253001029570144_telephony.csv")
+    # analyzer_telephony    = Analyzer(config)
+    # results_telephony = analyzer_telephony.analyze()
+    
+    # multipleResults = [results_narrowband, results_telephony]
+    results[0].write_details(results, config.getValue("ErrorRateOutput","details_file"))
+    #results.write_summary(config.getValue("ErrorRateOutput","summary_file"))
 
 if __name__ == '__main__':
     main()

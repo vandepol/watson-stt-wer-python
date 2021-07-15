@@ -23,3 +23,13 @@ class Config:
            value = list.get(key, None)
         return value
 
+    def getValueWithDefault(self, section, key, default):
+        value = self.getValue(section, key)
+        if value == None:
+           return default
+        return value
+
+
+    def setValue(self, section, key, value):
+        self.config.set(section, key, value)
+
